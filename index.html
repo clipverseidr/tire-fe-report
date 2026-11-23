@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0d6efd" />
+  <title>TIRE FE REPORT</title>
+  <link rel="manifest" href="manifest.json" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <style>
+    body { background-color: #f4f6f9; }
+    .chart-box { position: relative; height: 260px; }
+  </style>
+</head>
+<body>
+  <!-- Navbar -->
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top shadow-sm">
+    <div class="container-fluid">
+      <span class="navbar-brand fw-bold">TIRE FE REPORT</span>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <span id="networkBadge" class="badge bg-success">Online</span>
+        <span id="queueBadge" class="badge bg-secondary">Queue: 0</span>
+        <span id="authUserInfo" class="text-light small me-1">Belum login</span>
+        <button id="btnManualSync" type="button" class="btn btn-sm btn-outline-info">Sync Now</button>
+        <button id="btnLogout" type="button" class="btn btn-sm btn-outline-light d-none">Logout</button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container py-4">
+    <!-- Alert Status -->
+    <div id="globalAlert" class="alert alert-info d-none" role="alert"></div>
+
+    <!-- Login Card (tampil jika belum ada sesi tersimpan) -->
+    <div id="loginCard" class="card shadow-sm mx-auto mb-4" style="max-width: 440px;">
+      <div class="card-body text-center p-4">
+        <h5 class="card-title mb-2">Login TIRE FE REPORT</h5>
+        <p class="text-muted small mb-3">Masuk menggunakan akun Google terdaftar pada sistem.</p>
+        <div id="googleSignInBtn" class="d-flex justify-content-center mb-3"></div>
+        <div id="loginHint" class="small text-muted">Pastikan email Anda sudah di-allowlist di sheet Users.</div>
+      </div>
+    </div>
+
+    <!-- Main App Container -->
+    <div id="appWorkspace" class="d-none">
+      <!-- Navigation Tabs -->
+      <ul class="nav nav-pills mb-3 gap-1" id="mainTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tabCheck" type="button">Daily Tire Check</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tabInspection" type="button">Daily Tire Inspection</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tabRepair" type="button">Daily Repair Tire</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tabDashboard" type="button">Dashboard &amp; Export</button>
+        </li>
+        <li class="nav-item" role="presentation" data-requires-perm="canManageUsers">
+          <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tabUsers" type="button">Users (Admin)</button>
+        </li>
+      </ul>
+
+      <div class="tab-content">
+        <!-- Tab 1: Daily Tire Check -->
+        <div class="tab-pane fade show active" id="tabCheck">
+          <div class="card shadow-sm mb-4">
+            <div class="card-header fw-semibold">Input Daily Tire Check</div>
+            <div class="card-body">
+              <form id="formDailyTireCheck" class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label">Date</label>
+                  <input type="date" id="dtcDate" class="form-control" required />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Site</label>
+                  <select id="dtcSite" class="form-select" required></select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Unit</label>
+                  <input type="text" id="dtcUnit" class="form-control" placeholder="Contoh: DT-01" required />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Position</label>
+                  <input type="text" id="dtcPosition" class="form-control" placeholder="Contoh: P1 / FR" />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Pressure (PSI)</label>
+                  <input type="number" step="0.1" id="dtcPressure" class="form-control" />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Photo (Opsional)</label>
+                  <input type="file" id="dtcPhoto" accept="image/*" capture="environment" class="form-control" />
+                </div>
+                <div class="col-12">
+                  <label class="form-label">Notes</label>
+                  <input type="text" id="dtcNotes" class="form-control" placeholder="Catatan kondisi ban..." />
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-primary" data-requires-perm="canCreate">Simpan (Offline-First)</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Riwayat Lokal Daily Tire Check</div>
+            <div class="card-body table-responsive">
+              <table class="table table-sm table-striped align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Site</th>
+                    <th>Unit</th>
+                    <th>Sync Status</th>
+                    <th>Transaction ID</th>
+                  </tr>
+                </thead>
+                <tbody id="dtcLocalTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Daily Tire Inspection -->
+        <div class="tab-pane fade" id="tabInspection">
+          <div class="card shadow-sm mb-4">
+            <div class="card-header fw-semibold">Input Daily Tire Inspection</div>
+            <div class="card-body">
+              <form id="formTireInspection" class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label">Date</label>
+                  <input type="date" id="dtiDate" class="form-control" required />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Site</label>
+                  <select id="dtiSite" class="form-select" required></select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Unit</label>
+                  <input type="text" id="dtiUnit" class="form-control" required />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Finding / Condition</label>
+                  <input type="text" id="dtiFinding" class="form-control" placeholder="Contoh: Cut tread / Wear" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Photo (Opsional)</label>
+                  <input type="file" id="dtiPhoto" accept="image/*" capture="environment" class="form-control" />
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-primary" data-requires-perm="canCreate">Simpan Inspection</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Riwayat Lokal Daily Tire Inspection</div>
+            <div class="card-body table-responsive">
+              <table class="table table-sm table-striped align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Site</th>
+                    <th>Unit / Tire</th>
+                    <th>Sync Status</th>
+                    <th>Transaction ID</th>
+                  </tr>
+                </thead>
+                <tbody id="dtiLocalTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Daily Repair Tire -->
+        <div class="tab-pane fade" id="tabRepair">
+          <div class="card shadow-sm mb-4">
+            <div class="card-header fw-semibold">Input Daily Repair Tire</div>
+            <div class="card-body">
+              <form id="formTireRepair" class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label">Date</label>
+                  <input type="date" id="drtDate" class="form-control" required />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Site</label>
+                  <select id="drtSite" class="form-select" required></select>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">Code Tire / Serial</label>
+                  <input type="text" id="drtCodeTire" class="form-control" required />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Repair Action</label>
+                  <input type="text" id="drtAction" class="form-control" placeholder="Contoh: Patch / Rotation / Dismount" />
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label">Photo (Opsional)</label>
+                  <input type="file" id="drtPhoto" accept="image/*" capture="environment" class="form-control" />
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-primary" data-requires-perm="canCreate">Simpan Repair</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Riwayat Lokal Daily Repair Tire</div>
+            <div class="card-body table-responsive">
+              <table class="table table-sm table-striped align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Site</th>
+                    <th>Unit / Tire</th>
+                    <th>Sync Status</th>
+                    <th>Transaction ID</th>
+                  </tr>
+                </thead>
+                <tbody id="drtLocalTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Dashboard & Export -->
+        <div class="tab-pane fade" id="tabDashboard">
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <div class="card shadow-sm">
+                <div class="card-body">
+                  <div class="text-muted small">Total Record Terbaca</div>
+                  <div id="kpiTotalRecords" class="fs-3 fw-bold">0</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="card shadow-sm">
+                <div class="card-body">
+                  <div class="text-muted small">Antrean Pending / Failed</div>
+                  <div id="kpiPendingQueue" class="fs-3 fw-bold text-warning">0</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <div class="card shadow-sm">
+                <div class="card-body">
+                  <div class="text-muted small">Antrean Tersinkron</div>
+                  <div id="kpiSyncedQueue" class="fs-3 fw-bold text-success">0</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card shadow-sm mb-3">
+            <div class="card-body row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small">Modul</label>
+                <select id="dashModuleFilter" class="form-select form-select-sm">
+                  <option value="ALL">Semua Modul</option>
+                  <option value="Daily Tire Check">Daily Tire Check</option>
+                  <option value="Daily Tire Inspection">Daily Tire Inspection</option>
+                  <option value="Daily Repair Tire">Daily Repair Tire</option>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small">Site</label>
+                <select id="dashSiteFilter" class="form-select form-select-sm"></select>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small">Pencarian</label>
+                <input type="text" id="dashSearchInput" class="form-control form-control-sm" placeholder="Unit / Tire / Catatan..." />
+              </div>
+              <div class="col-md-3 d-flex gap-1 flex-wrap">
+                <button id="btnRefreshDash" type="button" class="btn btn-sm btn-primary">Muat</button>
+                <button id="btnExportExcel" type="button" class="btn btn-sm btn-success" data-requires-perm="canExport">Excel</button>
+                <button id="btnExportPdf" type="button" class="btn btn-sm btn-danger" data-requires-perm="canExport">PDF</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="card shadow-sm">
+                <div class="card-header fw-semibold">Record per Modul</div>
+                <div class="card-body chart-box">
+                  <canvas id="chartByModule"></canvas>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="card shadow-sm">
+                <div class="card-header fw-semibold">Record per Site</div>
+                <div class="card-body chart-box">
+                  <canvas id="chartBySite"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 5: Users (SUPER ADMIN) -->
+        <div class="tab-pane fade" id="tabUsers" data-requires-perm="canManageUsers">
+          <div class="card shadow-sm mb-3">
+            <div class="card-header fw-semibold">Tambah / Update User Allowlist</div>
+            <div class="card-body">
+              <form id="formUpsertUser" class="row g-2">
+                <div class="col-md-3">
+                  <input type="email" id="usrEmail" class="form-control form-control-sm" placeholder="email@domain.com" required />
+                </div>
+                <div class="col-md-3">
+                  <input type="text" id="usrFullName" class="form-control form-control-sm" placeholder="Nama Lengkap" />
+                </div>
+                <div class="col-md-2">
+                  <select id="usrRole" class="form-select form-select-sm">
+                    <option value="OPERATOR">OPERATOR</option>
+                    <option value="SUPERVISOR">SUPERVISOR</option>
+                    <option value="ADMIN">ADMIN</option>
+                    <option value="SUPER ADMIN">SUPER ADMIN</option>
+                  </select>
+                </div>
+                <div class="col-md-2">
+                  <input type="text" id="usrSites" class="form-control form-control-sm" placeholder="ALL atau Site A, Site B" value="ALL" />
+                </div>
+                <div class="col-md-2">
+                  <select id="usrStatus" class="form-select form-select-sm">
+                    <option value="Active">Active</option>
+                    <option value="Suspended">Suspended</option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <button type="submit" class="btn btn-sm btn-dark">Simpan User</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Daftar User Terdaftar</div>
+            <div class="card-body table-responsive">
+              <table class="table table-sm table-striped mb-0">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Nama</th>
+                    <th>Role</th>
+                    <th>Sites</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="usersListBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Libraries & App Scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <script src="js/config.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/sync.js"></script>
+  <script src="js/dailyTireCheck.js"></script>
+  <script src="js/tireModules.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/exporter.js"></script>
+
+  <script>
+    (function() {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      ['dtcDate', 'dtiDate', 'drtDate'].forEach(function(id) {
+        const el = document.getElementById(id);
+        if (el && !el.value) el.value = todayIso;
+      });
+
+      function showAlert(msg, type) {
+        const box = document.getElementById('globalAlert');
+        if (!box) return;
+        box.className = 'alert alert-' + (type || 'info');
+        box.textContent = msg;
+        box.classList.remove('d-none');
+      }
+
+      async function updateQueueBadge() {
+        const stats = await DBManager.getQueueStats();
+        const badge = document.getElementById('queueBadge');
+        if (badge) {
+          badge.textContent = 'Queue: ' + stats.pending + ' pending';
+          badge.className = 'badge ' + (stats.pending > 0 ? 'bg-warning text-dark' : 'bg-secondary');
+        }
+      }
+
+      function updateNetworkBadge() {
+        const badge = document.getElementById('networkBadge');
+        if (!badge) return;
+        if (navigator.onLine) {
+          badge.textContent = 'Online';
+          badge.className = 'badge bg-success';
+        } else {
+          badge.textContent = 'Offline';
+          badge.className = 'badge bg-danger';
+        }
+      }
+
+      async function refreshAllTables() {
+        await DailyTireCheckModule.renderLocalTable('dtcLocalTableBody');
+        await TireModulesManager.renderLocalTable('Daily Tire Inspection', 'dtiLocalTableBody');
+        await TireModulesManager.renderLocalTable('Daily Repair Tire', 'drtLocalTableBody');
+        await updateQueueBadge();
+      }
+
+      async function loadUsersTable() {
+        if (!AuthManager.hasPermission('canManageUsers')) return;
+        try {
+          const res = await SyncManager.callApi('listUsers');
+          const tbody = document.getElementById('usersListBody');
+          if (!tbody) return;
+          const users = res.users || [];
+          tbody.innerHTML = users.map(function(u) {
+            return `<tr>
+              <td>${u.email}</td>
+              <td>${u.fullName || '-'}</td>
+              <td><span class="badge bg-primary">${u.role}</span></td>
+              <td>${u.assignedSitesRaw || 'ALL'}</td>
+              <td>${u.status}</td>
+            </tr>`;
+          }).join('');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      }
+
+      async function onAuthenticatedSession() {
+        document.getElementById('loginCard').classList.add('d-none');
+        document.getElementById('appWorkspace').classList.remove('d-none');
+        document.getElementById('btnLogout').classList.remove('d-none');
+        AuthManager.applyRolePermissionsToUI();
+
+        await DailyTireCheckModule.populateSiteOptions('dtcSite');
+        await TireModulesManager.populateSiteOptions('dtiSite');
+        await TireModulesManager.populateSiteOptions('drtSite');
+        await DashboardManager.populateFilterSiteSelect('dashSiteFilter');
+        await refreshAllTables();
+        await loadUsersTable();
+
+        if (navigator.onLine) {
+          await SyncManager.syncPendingQueue(function(msg) { showAlert(msg, 'info'); });
+          await refreshAllTables();
+          await DashboardManager.refreshDashboard();
+        }
+      }
+
+      // Form Daily Tire Check
+      document.getElementById('formDailyTireCheck').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        try {
+          const fields = {
+            'Date': document.getElementById('dtcDate').value,
+            'Site': document.getElementById('dtcSite').value,
+            'Unit': document.getElementById('dtcUnit').value.trim(),
+            'Position': document.getElementById('dtcPosition').value.trim(),
+            'Pressure': document.getElementById('dtcPressure').value,
+            'Notes': document.getElementById('dtcNotes').value.trim()
+          };
+          const photoFile = document.getElementById('dtcPhoto').files[0];
+          const photoFiles = photoFile ? { 'Photo': photoFile } : {};
+
+          const outcome = await DailyTireCheckModule.submitDailyTireCheck(fields, photoFiles, function(st) {
+            showAlert(st, 'info');
+          });
+          e.target.reset();
+          document.getElementById('dtcDate').value = todayIso;
+          await refreshAllTables();
+          showAlert(outcome.sync.message || 'Data tersimpan.', 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      // Form Daily Tire Inspection
+      document.getElementById('formTireInspection').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        try {
+          const fields = {
+            'Date': document.getElementById('dtiDate').value,
+            'Site': document.getElementById('dtiSite').value,
+            'Unit': document.getElementById('dtiUnit').value.trim(),
+            'Finding': document.getElementById('dtiFinding').value.trim()
+          };
+          const photoFile = document.getElementById('dtiPhoto').files[0];
+          const photoFiles = photoFile ? { 'Photo': photoFile } : {};
+
+          const outcome = await TireModulesManager.submitTireModuleRecord(
+            'Daily Tire Inspection', fields, photoFiles, function(st) { showAlert(st, 'info'); }
+          );
+          e.target.reset();
+          document.getElementById('dtiDate').value = todayIso;
+          await refreshAllTables();
+          showAlert(outcome.sync.message || 'Data tersimpan.', 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      // Form Daily Repair Tire
+      document.getElementById('formTireRepair').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        try {
+          const fields = {
+            'Date': document.getElementById('drtDate').value,
+            'Site': document.getElementById('drtSite').value,
+            'Code Tire': document.getElementById('drtCodeTire').value.trim(),
+            'Repair Action': document.getElementById('drtAction').value.trim()
+          };
+          const photoFile = document.getElementById('drtPhoto').files[0];
+          const photoFiles = photoFile ? { 'Photo': photoFile } : {};
+
+          const outcome = await TireModulesManager.submitTireModuleRecord(
+            'Daily Repair Tire', fields, photoFiles, function(st) { showAlert(st, 'info'); }
+          );
+          e.target.reset();
+          document.getElementById('drtDate').value = todayIso;
+          await refreshAllTables();
+          showAlert(outcome.sync.message || 'Data tersimpan.', 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      // Dashboard & Export buttons
+      document.getElementById('btnRefreshDash').addEventListener('click', async function() {
+        try {
+          await DashboardManager.refreshDashboard({
+            moduleName: document.getElementById('dashModuleFilter').value,
+            site: document.getElementById('dashSiteFilter').value,
+            searchText: document.getElementById('dashSearchInput').value.trim()
+          });
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      document.getElementById('btnExportExcel').addEventListener('click', function() {
+        try {
+          const fname = ReportExporter.exportToExcel(DashboardManager.getLatestRows(), 'TIRE_FE_REPORT');
+          showAlert('Berhasil mengunduh ' + fname, 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      document.getElementById('btnExportPdf').addEventListener('click', function() {
+        try {
+          const fname = ReportExporter.exportToPdf(DashboardManager.getLatestRows(), 'TIRE FE REPORT');
+          showAlert('Berhasil mengunduh ' + fname, 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      // User Upsert Form
+      document.getElementById('formUpsertUser').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        try {
+          await SyncManager.callApi('upsertUser', {
+            user: {
+              email: document.getElementById('usrEmail').value.trim(),
+              fullName: document.getElementById('usrFullName').value.trim(),
+              role: document.getElementById('usrRole').value,
+              assignedSites: document.getElementById('usrSites').value.trim(),
+              status: document.getElementById('usrStatus').value
+            }
+          });
+          e.target.reset();
+          document.getElementById('usrSites').value = 'ALL';
+          await loadUsersTable();
+          showAlert('User berhasil disimpan.', 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      // Manual Sync & Logout & Network Listeners
+      document.getElementById('btnManualSync').addEventListener('click', async function() {
+        try {
+          const res = await SyncManager.syncPendingQueue(function(st) { showAlert(st, 'info'); });
+          await refreshAllTables();
+          showAlert(res.message || 'Sinkronisasi selesai.', 'success');
+        } catch (err) {
+          showAlert(err.message, 'danger');
+        }
+      });
+
+      document.getElementById('btnLogout').addEventListener('click', function() {
+        AuthManager.clearSession();
+        window.location.reload();
+      });
+
+      window.addEventListener('online', async function() {
+        updateNetworkBadge();
+        if (AuthManager.getSession()) {
+          const res = await SyncManager.syncPendingQueue(function(st) { showAlert(st, 'info'); });
+          await refreshAllTables();
+          if (res.syncedCount > 0) showAlert(res.message, 'success');
+        }
+      });
+
+      window.addEventListener('offline', function() {
+        updateNetworkBadge();
+      });
+
+      // Service Worker Registration
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('./service-worker.js').catch(function(err) {
+            console.warn('Registrasi Service Worker gagal:', err);
+          });
+        });
+      }
+
+      // Init Auth & Session
+      updateNetworkBadge();
+      window.addEventListener('load', async function() {
+        await updateQueueBadge();
+        if (AuthManager.getSession() && AuthManager.getUser()) {
+          await onAuthenticatedSession();
+          return;
+        }
+
+        const clientId = window.APP_CONFIG && window.APP_CONFIG.GOOGLE_CLIENT_ID;
+        const waitGsi = setInterval(function() {
+          if (window.google && google.accounts && google.accounts.id && clientId) {
+            clearInterval(waitGsi);
+            AuthManager.initGoogleSignInButton(
+              'googleSignInBtn',
+              clientId,
+              async function() { await onAuthenticatedSession(); },
+              function(err) { showAlert(err.message, 'danger'); }
+            );
+          }
+        }, 250);
+      });
+    })();
+  </script>
+</body>
+</html>
