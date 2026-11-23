@@ -1,263 +1,197 @@
 /**
- * sync.js
- * Mesin Sinkronisasi Offline-First: Sequential Photo Upload & Chunked Record Sync.
+ * js/sync.js - 5 Jalur Sinkronisasi Terpisah & Automatic Retry
+ * 1. Master Data
+ * 2. Photos (Sequential per record)
+ * 3. Operational Records (Chunked per module)
+ * 4. User Changes
+ * 5. Audit Logs
  */
-
 const SyncManager = (function() {
   const CHUNK_SIZE = 10;
   let isSyncing = false;
 
   function generateUuid() {
-    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
-      return window.crypto.randomUUID();
-    }
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
       const r = (Math.random() * 16) | 0;
-      const v = c === 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
     });
   }
 
   function generateTransactionId(prefix) {
-    const p = prefix || 'TRX';
-    const ts = Date.now().toString(36).toUpperCase();
-    const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-    return p + '-' + ts + '-' + rand;
+    return (prefix || 'TRX') + '-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
   }
 
-  async function callApi(action, extraPayload) {
-    const apiUrl = window.APP_CONFIG && window.APP_CONFIG.API_URL;
+  function callApi(action, extraPayload) {
+    const payload = Object.assign({ action: action }, extraPayload || {});
+
+    // Prioritas 1: Google Apps Script HTML Service (google.script.run)
+    if (window.APP_CONFIG.TRANSPORT_MODE === 'APPS_SCRIPT' && typeof google !== 'undefined' && google.script && google.script.run) {
+      return new Promise((resolve, reject) => {
+        google.script.run
+          .withSuccessHandler(res => {
+            if (!res || !res.success) reject(new Error((res && res.error) || 'Gagal memproses di server.'));
+            else resolve(res);
+          })
+          .withFailureHandler(err => reject(new Error(err.message || String(err))))
+          .handleApiRequest(payload);
+      });
+    }
+
+    // Prioritas 2: Cross-origin CORS JSON POST ke Web App URL
+    const apiUrl = window.APP_CONFIG.API_URL;
     const idToken = window.AuthManager ? window.AuthManager.getIdToken() : '';
+    if (!apiUrl) return Promise.reject(new Error('API_URL belum dikonfigurasi.'));
+    payload.idToken = idToken;
 
-    if (!apiUrl) throw new Error('API_URL belum dikonfigurasi.');
-    if (!idToken) throw new Error('Sesi login belum tersedia. Silakan login terlebih dahulu.');
-
-    const payload = Object.assign({ action: action, idToken: idToken }, extraPayload || {});
-    const res = await fetch(apiUrl, {
+    return fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(payload),
       redirect: 'follow'
-    });
-
-    const json = await res.json();
-    if (!json.success) {
-      throw new Error(json.error || ('Permintaan ' + action + ' gagal.'));
-    }
-    return json;
-  }
-
-  /**
-   * Mengirim batch record sesuai nama modulnya.
-   */
-  async function sendBatchByModule(moduleName, recordsPayload) {
-    if (moduleName === 'Daily Tire Check') {
-      return callApi('syncDailyTireCheckBatch', {
-        records: recordsPayload
-      });
-    }
-
-    return callApi('syncTireModuleBatch', {
-      moduleName: moduleName,
-      records: recordsPayload
+    }).then(r => r.json()).then(json => {
+      if (!json.success) throw new Error(json.error || 'Permintaan gagal.');
+      return json;
     });
   }
 
-  /**
-   * Mengelompokkan item siap kirim berdasarkan moduleName.
-   */
-  function groupItemsByModule(preparedItems) {
-    const grouped = {};
-    preparedItems.forEach(function(entry) {
-      const modName = entry.record.moduleName || 'Daily Tire Check';
-      if (!grouped[modName]) {
-        grouped[modName] = [];
-      }
-      grouped[modName].push(entry);
-    });
-    return grouped;
+  // Channel 1: Master Data Queue
+  async function syncMasterChannel(onProgress) {
+    const items = (await DBManager.txGetAll('syncQueueMaster')).filter(i => i.status !== 'SYNCED');
+    let count = 0;
+    for (const item of items) {
+      if (onProgress) onProgress(`Sync Master Data: ${item.payload.category} - ${item.payload.value}...`);
+      const res = await callApi('addMasterOption', item.payload);
+      await DBManager.txDelete('syncQueueMaster', item.queueId);
+      if (res.option) await DBManager.txPut('masterData', res.option);
+      count++;
+    }
+    return count;
   }
 
-  /**
-   * Mengunggah seluruh foto milik sebuah record secara berurutan (1 per 1).
-   */
-  async function uploadRecordPhotosSequentially(record, onProgress) {
-    const photos = await DBManager.getPhotosByRecord(record.uuid);
-    const uploadedUrls = {};
-
-    for (let i = 0; i < photos.length; i++) {
-      const photo = photos[i];
-      if (photo.uploaded && photo.driveUrl) {
-        uploadedUrls[photo.fieldName] = photo.driveUrl;
-        continue;
-      }
-
-      if (typeof onProgress === 'function') {
-        onProgress(`Mengunggah foto ${i + 1}/${photos.length} (${photo.fieldName})...`);
-      }
-
-      const res = await callApi('uploadPhoto', {
-        moduleName: record.moduleName,
-        recordUuid: record.uuid,
-        fieldName: photo.fieldName,
-        siteName: record.site || '',
-        recordDate: record.recordDate || '',
-        base64Data: photo.base64Data,
-        mimeType: photo.mimeType || 'image/jpeg'
-      });
-
-      const driveUrl = (res.file && (res.file.viewUrl || res.file.url || res.file.downloadUrl)) || '';
-      photo.uploaded = true;
-      photo.driveUrl = driveUrl;
-      photo.uploadedAt = new Date().toISOString();
-      await DBManager.putPhoto(photo);
-
-      uploadedUrls[photo.fieldName] = driveUrl;
-    }
-
-    return uploadedUrls;
-  }
-
-  /**
-   * Menjalankan sinkronisasi antrean tertunda secara berurutan & chunked.
-   */
-  async function syncPendingQueue(onProgress) {
-    if (isSyncing) {
-      return { skipped: true, message: 'Sinkronisasi sedang berjalan.' };
-    }
-    if (!navigator.onLine) {
-      return { offline: true, message: 'Perangkat sedang offline. Data aman di penyimpanan lokal.' };
-    }
-
-    isSyncing = true;
+  // Channel 2 & 3: Sequential Photo Upload lalu Chunked Operational Records
+  async function syncRecordsAndPhotosChannel(onProgress) {
+    const recQueue = (await DBManager.txGetAll('syncQueueRecords')).filter(i => i.status !== 'SYNCED');
     let syncedCount = 0;
     let failedCount = 0;
+    const readyByModule = {};
 
-    try {
-      const pendingQueue = await DBManager.getPendingQueueItems();
-      if (!pendingQueue.length) {
-        return { syncedCount: 0, failedCount: 0, message: 'Tidak ada antrean yang perlu disinkronkan.' };
+    for (const qItem of recQueue) {
+      const record = await DBManager.txGet('records', qItem.recordUuid);
+      if (!record) {
+        await DBManager.txDelete('syncQueueRecords', qItem.queueId);
+        continue;
       }
-
-      const preparedItems = [];
-
-      // Tahap 1: Sequential Photo Upload per record
-      for (let i = 0; i < pendingQueue.length; i++) {
-        const qItem = pendingQueue[i];
-        const record = await DBManager.getLocalRecord(qItem.recordUuid);
-        if (!record) {
-          qItem.status = 'SYNCED';
-          qItem.syncedAt = new Date().toISOString();
-          await DBManager.putSyncQueueItem(qItem);
-          continue;
+      try {
+        const photos = await DBManager.getPhotosByRecord(record.uuid);
+        for (let i = 0; i < photos.length; i++) {
+          const p = photos[i];
+          if (p.uploaded && p.drivePath) {
+            record.fields[p.fieldName] = p.drivePath;
+            continue;
+          }
+          if (onProgress) onProgress(`Upload foto ${i + 1}/${photos.length} (${p.fieldName})...`);
+          const upRes = await callApi('uploadPhoto', {
+            moduleName: record.moduleName,
+            recordUuid: record.uuid,
+            fieldName: p.fieldName,
+            siteName: record.fields['Site'],
+            base64Data: p.base64Data,
+            mimeType: p.mimeType
+          });
+          p.uploaded = true;
+          p.drivePath = upRes.file.relativePath;
+          await DBManager.txPut('photos', p);
+          await DBManager.txDelete('syncQueuePhotos', p.photoId);
+          record.fields[p.fieldName] = p.drivePath;
         }
 
+        if (!readyByModule[record.moduleName]) readyByModule[record.moduleName] = [];
+        readyByModule[record.moduleName].push({ qItem, record });
+      } catch (err) {
+        failedCount++;
+        qItem.status = 'FAILED';
+        qItem.attempts = (qItem.attempts || 0) + 1;
+        qItem.lastError = err.message;
+        await DBManager.txPut('syncQueueRecords', qItem);
+      }
+    }
+
+    for (const modName of Object.keys(readyByModule)) {
+      const entries = readyByModule[modName];
+      for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+        const chunk = entries.slice(i, i + CHUNK_SIZE);
+        if (onProgress) onProgress(`Sync ${modName} (${chunk.length} record)...`);
         try {
-          record.syncStatus = 'UPLOADING_PHOTOS';
-          await DBManager.putLocalRecord(record);
-
-          const uploadedUrls = await uploadRecordPhotosSequentially(record, onProgress);
-
-          record.fields = Object.assign({}, record.fields || {});
-          Object.keys(uploadedUrls).forEach(function(fieldName) {
-            record.fields[fieldName] = uploadedUrls[fieldName];
+          const res = await callApi('syncRecordsBatch', {
+            moduleName: modName,
+            records: chunk.map(e => e.record)
           });
-
-          preparedItems.push({ queueItem: qItem, record: record });
-        } catch (err) {
-          failedCount++;
-          qItem.status = 'FAILED';
-          qItem.attempts = (qItem.attempts || 0) + 1;
-          qItem.lastError = err.message || String(err);
-          qItem.updatedAt = new Date().toISOString();
-          await DBManager.putSyncQueueItem(qItem);
-
-          record.syncStatus = 'FAILED';
-          record.lastError = qItem.lastError;
-          await DBManager.putLocalRecord(record);
-        }
-      }
-
-      // Tahap 2: Chunked Record Sync per Modul ke Google Sheets
-      const groupedByModule = groupItemsByModule(preparedItems);
-      const moduleNames = Object.keys(groupedByModule);
-
-      for (let m = 0; m < moduleNames.length; m++) {
-        const modName = moduleNames[m];
-        const modItems = groupedByModule[modName];
-
-        for (let start = 0; start < modItems.length; start += CHUNK_SIZE) {
-          const chunk = modItems.slice(start, start + CHUNK_SIZE);
-          if (typeof onProgress === 'function') {
-            onProgress(`Menyinkronkan ${modName} (batch ${Math.floor(start / CHUNK_SIZE) + 1})...`);
-          }
-
-          const recordsPayload = chunk.map(function(entry) {
-            return {
-              uuid: entry.record.uuid,
-              transactionId: entry.record.transactionId,
-              version: entry.record.version || 1,
-              createdAt: entry.record.createdAt,
-              updatedAt: entry.record.updatedAt,
-              fields: entry.record.fields
-            };
-          });
-
-          try {
-            const batchRes = await sendBatchByModule(modName, recordsPayload);
-            const results = batchRes.results || [];
-
-            for (let j = 0; j < chunk.length; j++) {
-              const entry = chunk[j];
-              const rStatus = results[j];
-              if (rStatus && rStatus.success === false) {
-                throw new Error(rStatus.error || 'Gagal menyimpan record di server.');
-              }
-
-              entry.record.syncStatus = 'SYNCED';
-              entry.record.syncedAt = new Date().toISOString();
-              entry.record.lastError = '';
-              await DBManager.putLocalRecord(entry.record);
-
-              entry.queueItem.status = 'SYNCED';
-              entry.queueItem.syncedAt = new Date().toISOString();
-              entry.queueItem.lastError = '';
-              await DBManager.putSyncQueueItem(entry.queueItem);
-
+          for (let j = 0; j < chunk.length; j++) {
+            const rItem = res.results[j];
+            if (rItem && rItem.success) {
+              chunk[j].record.syncStatus = 'SYNCED';
+              await DBManager.txPut('records', chunk[j].record);
+              // Hapus dari antrean lokal HANYA setelah server mengonfirmasi sukses
+              await DBManager.txDelete('syncQueueRecords', chunk[j].qItem.queueId);
               syncedCount++;
-            }
-          } catch (batchErr) {
-            for (let j = 0; j < chunk.length; j++) {
-              const entry = chunk[j];
+            } else {
               failedCount++;
-              entry.queueItem.status = 'FAILED';
-              entry.queueItem.attempts = (entry.queueItem.attempts || 0) + 1;
-              entry.queueItem.lastError = batchErr.message || String(batchErr);
-              entry.queueItem.updatedAt = new Date().toISOString();
-              await DBManager.putSyncQueueItem(entry.queueItem);
-
-              entry.record.syncStatus = 'FAILED';
-              entry.record.lastError = entry.queueItem.lastError;
-              await DBManager.putLocalRecord(entry.record);
             }
+          }
+        } catch (batchErr) {
+          failedCount += chunk.length;
+          for (const e of chunk) {
+            e.qItem.status = 'FAILED';
+            e.qItem.lastError = batchErr.message;
+            await DBManager.txPut('syncQueueRecords', e.qItem);
           }
         }
       }
+    }
+    return { syncedCount, failedCount };
+  }
 
+  // Channel 4: User Changes
+  async function syncUsersChannel() {
+    const items = (await DBManager.txGetAll('syncQueueUsers')).filter(i => i.status !== 'SYNCED');
+    for (const item of items) {
+      await callApi('upsertUser', { user: item.payload });
+      await DBManager.txDelete('syncQueueUsers', item.queueId);
+    }
+    return items.length;
+  }
+
+  // Channel 5: Audit Logs
+  async function syncLogsChannel() {
+    const items = (await DBManager.txGetAll('syncQueueLogs')).filter(i => i.status !== 'SYNCED');
+    if (!items.length) return 0;
+    await callApi('syncAuditLogs', { logs: items.map(i => i.payload) });
+    for (const item of items) {
+      await DBManager.txDelete('syncQueueLogs', item.queueId);
+    }
+    return items.length;
+  }
+
+  async function syncAllChannels(onProgress) {
+    if (isSyncing) return { skipped: true, message: 'Sinkronisasi sedang berjalan...' };
+    if (!navigator.onLine) return { offline: true, message: 'Mode Offline: Data tersimpan aman di IndexedDB.' };
+
+    isSyncing = true;
+    try {
+      await syncMasterChannel(onProgress);
+      const recRes = await syncRecordsAndPhotosChannel(onProgress);
+      await syncUsersChannel();
+      await syncLogsChannel();
       return {
-        syncedCount: syncedCount,
-        failedCount: failedCount,
-        message: `Sinkronisasi selesai: ${syncedCount} berhasil, ${failedCount} gagal.`
+        syncedCount: recRes.syncedCount,
+        failedCount: recRes.failedCount,
+        message: `Sinkronisasi selesai (${recRes.syncedCount} record berhasil, ${recRes.failedCount} gagal).`
       };
     } finally {
       isSyncing = false;
     }
   }
 
-  return {
-    generateUuid: generateUuid,
-    generateTransactionId: generateTransactionId,
-    callApi: callApi,
-    syncPendingQueue: syncPendingQueue
-  };
+  return { generateUuid, generateTransactionId, callApi, syncAllChannels };
 })();
